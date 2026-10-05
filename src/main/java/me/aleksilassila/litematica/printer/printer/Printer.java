@@ -1,0 +1,711 @@
+package me.aleksilassila.litematica.printer.printer;
+
+import fi.dy.masa.litematica.data.DataManager;
+import fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager;
+import fi.dy.masa.litematica.selection.AreaSelection;
+import fi.dy.masa.litematica.selection.Box;
+import fi.dy.masa.litematica.util.EasyPlaceProtocol;
+import fi.dy.masa.litematica.util.InventoryUtils;
+import fi.dy.masa.litematica.util.PlacementHandler;
+import fi.dy.masa.litematica.world.SchematicWorldHandler;
+import fi.dy.masa.litematica.world.WorldSchematic;
+import fi.dy.masa.malilib.config.IConfigOptionListEntry;
+import fi.dy.masa.malilib.util.restrictions.UsageRestriction;
+import me.aleksilassila.litematica.printer.LitematicaMixinMod;
+import me.aleksilassila.litematica.printer.interfaces.IClientPlayerInteractionManager;
+import me.aleksilassila.litematica.printer.interfaces.Implementation;
+import me.aleksilassila.litematica.printer.mixin.masa.WorldUtilsAccessor;
+import me.aleksilassila.litematica.printer.printer.bedrockUtils.BreakingFlowController;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.HighlightBlockRenderer;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction;
+import me.aleksilassila.litematica.printer.printer.zxy.inventory.SwitchItem;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.Verify;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.ZxyUtils;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.overwrite.MyBox;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
+
+import static fi.dy.masa.litematica.selection.SelectionMode.NORMAL;
+import static fi.dy.masa.tweakeroo.config.Configs.Lists.BLOCK_TYPE_BREAK_RESTRICTION_BLACKLIST;
+import static fi.dy.masa.tweakeroo.config.Configs.Lists.BLOCK_TYPE_BREAK_RESTRICTION_WHITELIST;
+import static fi.dy.masa.tweakeroo.tweaks.PlacementTweaks.BLOCK_TYPE_BREAK_RESTRICTION;
+import static me.aleksilassila.litematica.printer.LitematicaMixinMod.*;
+import static me.aleksilassila.litematica.printer.printer.Printer.TempData.*;
+import static me.aleksilassila.litematica.printer.printer.State.PrintModeType.*;
+import static me.aleksilassila.litematica.printer.printer.bedrockUtils.BreakingFlowController.cachedTargetBlockList;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.Filters.equalsBlockName;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.Filters.equalsItemName;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.HighlightBlockRenderer.getHighlightBlockPosList;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction.excavateBlock;
+import static me.aleksilassila.litematica.printer.printer.zxy.inventory.InventoryUtils.*;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.ZxyUtils.*;
+import static net.minecraft.world.level.block.state.properties.ChestType.*;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+//#if MC > 260100
+import static fi.dy.masa.litematica.util.EasyPlaceUtils.applyCarpetProtocolHitVec;
+import static fi.dy.masa.litematica.util.EasyPlaceUtils.applyPlacementProtocolV3;
+//#else
+//$$ import static fi.dy.masa.litematica.util.WorldUtils.applyCarpetProtocolHitVec;
+//$$ import static fi.dy.masa.litematica.util.WorldUtils.applyPlacementProtocolV3;
+//#endif
+
+//#if MC >= 12001
+    //#if MC > 12105
+
+    //#endif
+//#else
+//$$ import me.aleksilassila.litematica.printer.printer.zxy.memory.MemoryUtils;
+//$$ import me.aleksilassila.litematica.printer.printer.zxy.memory.Memory;
+//$$ import me.aleksilassila.litematica.printer.printer.zxy.memory.MemoryDatabase;
+//#endif
+
+//#if MC < 11900
+//$$ import fi.dy.masa.malilib.util.SubChunkPos;
+//#endif
+
+public class Printer extends PrinterUtils {
+    private static final Logger LOGGER = LoggerFactory.getLogger(Printer.class);
+    public static boolean up = true;
+
+    public static class TempData {
+        public static boolean xuanQuFanWeiNei_p(BlockPos pos) {
+          return  xuanQuFanWeiNei_p(pos,0);
+        }
+        public static boolean xuanQuFanWeiNei_p(BlockPos pos,int p) {
+            AreaSelection i = DataManager.getSelectionManager().getCurrentSelection();
+            if (i == null) return false;
+            if (DataManager.getSelectionManager().getSelectionMode() == NORMAL) {
+                boolean fw = false;
+                List<Box> arr = i.getAllSubRegionBoxes();
+                for (int j = 0; j < arr.size(); j++) {
+                    if (comparePos(arr.get(j), pos,p)) {
+                        return true;
+                    } else {
+                        fw = false;
+                    }
+                }
+                return fw;
+            } else {
+                Box box = i.getSubRegionBox(DataManager.getSimpleArea().getName());
+                return comparePos(box, pos,p);
+            }
+        }
+
+        static boolean comparePos(Box box, BlockPos pos,int p) {
+            if(box == null || box.getPos1() == null || box.getPos2() == null || pos == null) return false;
+            MyBox box1 = new MyBox(box);
+            box1 = box1.expand(p);
+            //因为麻将的Box.contains方法内部用的 x >= this.minX && x < this.maxX ... 最小边界能被覆盖，但是最大边界不行
+            //因此 重写了该方法
+            return box1.contains(Vec3.atLowerCornerOf(pos));
+        }
+    }
+    public static boolean isEnablePrinter(){
+        return TOGGLE_PRINTING_MODE.getBooleanValue() || PRINT.getKeybind().isPressed();
+    }
+
+    private static Printer INSTANCE = null;
+    @NotNull
+    public final Minecraft client;
+    public final PlacementGuide guide;
+    public static PlacementGuide.Action currentAction;
+
+    public static int tick = 0;
+
+    public static @NotNull Printer getPrinter() {
+        if (INSTANCE == null) {
+            INSTANCE = new Printer(ZxyUtils.client);
+        }
+        return INSTANCE;
+    }
+
+    private Printer(@NotNull Minecraft client) {
+        this.client = client;
+
+        this.guide = new PlacementGuide(client);
+
+        INSTANCE = this;
+    }
+
+
+    int range1;
+    boolean yDegression = false;
+    public MyBox myBox;
+    BlockPos getBlockPos2() {
+        if (timedOut()) return null;
+        LocalPlayer player = client.player;
+        if (player == null) return null;
+        if (myBox == null) {
+            resetBlockIterator();
+        }
+        //离中心点一段距离后会触发，频繁重置pos会浪费性能
+        double num = range1 * 0.7;
+        if (!myBox.center.closerThan(player.blockPosition().above(), num)) {
+            resetBlockIterator();
+        }
+        IConfigOptionListEntry optionListValue = RANGE_MODE.getOptionListValue();
+        myBox.setSphereMode(optionListValue == State.ListType.SPHERE);
+        myBox.setYIncrement(!yDegression);
+        Iterator<BlockPos> iterator = myBox.initIterator();
+
+        if (!timedOut()) {
+            if (!iterator.hasNext()) {
+                myBox = null;
+                return null;
+            }
+            return iterator.next();
+        }
+        //附近方块迭代完成之后是否应该重新开始？而不是直接结束，浪费1tick
+        //迭代完成之后通常是已经放置完成，除非是铺铁砧这类情况。直接重新开始会导致占用一直处于满负荷
+        return null;
+    }
+
+    void resetBlockIterator() {
+        BlockPos blockPos = client.player.blockPosition().above();
+        myBox = new MyBox(blockPos,range1);
+    }
+
+    //根据当前毫秒值判断是否超时了
+    boolean timedOut() {
+        return System.currentTimeMillis() >= endTime;
+    }
+    public static class ItemConfig {
+        public ItemConfig(List<Item> itemList, boolean holdRequired) {
+            this.itemList = itemList;
+            // 需要背包中有该物品
+            this.holdRequired = holdRequired;
+        }
+
+        public List<Item> itemList;
+        public boolean holdRequired;
+    }
+
+    public HashMap<List<String>, ItemConfig> replaceTaskMap = new HashMap<>();
+    public BlockPos replacePos = null;
+
+    public void initReplaceTask(){
+        List<String> replaceTaskList = FLUID_BLOCK_LIST.getStrings();
+        if (replaceTaskList.isEmpty()) return;
+        // replaceTaskList 元素格式案例 minecraft:stone|minecraft:dirt => minecraft:grass_block
+        for (String replace : replaceTaskList) {
+            if (replace.length() < 2 || "//".equals(replace.substring(0,2))) continue;
+            boolean holdRequired = false;
+            if (replace.length() > 2 && "&&".equals(replace.substring(0,2))) {
+                holdRequired = true;
+                replace = replace.substring(2);
+            }
+            String[] split = replace.replaceAll("\\s","").split("=>|->");
+            if(split.length != 2) continue;
+            String[] originBlock = split[0].split("\\|");
+            String[] newBlock = split[1].split("\\|");
+
+            replaceTaskMap.put(new ArrayList<>(List.of(originBlock)), new ItemConfig(BuiltInRegistries.ITEM.stream().filter(item ->
+                    Arrays.stream(newBlock).anyMatch(targetBlockName -> equalsItemName(targetBlockName, new ItemStack(item)))).toList(), holdRequired));
+        }
+
+    }
+
+    public void replaceMode() {
+        if (replaceTaskMap.isEmpty()) initReplaceTask();
+
+        BlockPos pos;
+        while ((pos = replacePos != null ? replacePos : getBlockPos2()) != null && client.level != null && client.player != null) {
+            BlockState currentState = client.level.getBlockState(pos);
+            if (client.player != null && !canInteracted(pos) || !xuanQuFanWeiNei_p(pos) || isLimitedByTheNumberOfLayers(pos)) {
+                replacePos = null;
+                continue;
+            }
+            BlockPos finalPos = pos;
+            AtomicReference<PlacementGuide.Action> action = new AtomicReference<>();
+            final boolean[] skip = {false}; // 跳过方块名不符合的方块
+            // map中的k是源方块名，v是目标方块
+            boolean b = replaceTaskMap.entrySet().stream().anyMatch(entry -> {
+                for (String blockName : entry.getKey()) {
+                    // 为排流体破坏多余方块特殊处理
+                    if (canBreakBlock(finalPos) && equalsBlockName(blockName, currentState, finalPos) && entry.getKey().stream().filter(name -> !blockName.equals(name)).anyMatch(name -> checkFluid(finalPos,name))) {
+                        if (excavateBlock(finalPos) == null) {
+                            replacePos = finalPos;
+                            return true;
+                        }
+                        replacePos = null;
+                        return false;
+                    }
+
+                    if ((!entry.getValue().holdRequired || entry.getValue().itemList.stream().anyMatch(item -> hasItem(item))) &&
+                            ("all".equals(blockName) || equalsBlockName(blockName, currentState, finalPos)) &&
+                            entry.getValue().itemList.stream().noneMatch(item -> equalsBlockName(getItemName(item.getDefaultInstance()), currentState, finalPos))) {
+                        if (((Predicate<List<Item>>) items -> {
+                            action.set(guide.buildAction(client.level, Blocks.AIR.defaultBlockState(), currentState, finalPos, guide.getClassHook(currentState)));
+                            if (excavateBlock(finalPos) == null) {
+                                replacePos = finalPos;
+                                return true;
+                            }
+                            replacePos = null;
+
+                            if (items.stream().noneMatch(item -> item.equals(Items.AIR))) {
+                                // 要么不是流体，要么是源
+                                if ((currentState.getFluidState().isEmpty() || currentState.getFluidState().isSource())) {
+                                    if (!switchToItems(client.player, items.toArray(new Item[0]))) {
+                                        remoteItem.addAll(items);
+                                        return true;
+                                    }
+                                    if (action.get() != null) {
+                                        action.get().queueAction(finalPos);
+                                        action.get().sendQueue(client.player);
+                                    } else if (action.get() == null) {
+                                        ((IClientPlayerInteractionManager) client.gameMode).rightClickBlock(finalPos, Direction.UP, Vec3.atLowerCornerOf(finalPos));
+                                    }
+                                    return false;
+                                }
+                            }
+                            return false;
+                        }).test(entry.getValue().itemList)) return true;
+                        return false;
+                    }
+                    replacePos = null;
+                }
+                skip[0] = true;
+                return false;
+            });
+            if (skip[0]) continue;
+            if (b) return;
+            if (tickRate == 0) continue;
+            return;
+        }
+    }
+
+    public boolean checkFluid(BlockPos pos, String blockName) {
+        {
+            if (equalsBlockName(blockName, Blocks.WATER) || equalsBlockName(blockName, Blocks.LAVA)) {
+                if (client.level.getBlockState(pos.above()).getFluidState().isEmpty() &&
+                        client.level.getBlockState(pos.below()).getFluidState().isEmpty() &&
+                        client.level.getBlockState(pos.north()).getFluidState().isEmpty() &&
+                        client.level.getBlockState(pos.south()).getFluidState().isEmpty() &&
+                        client.level.getBlockState(pos.east()).getFluidState().isEmpty() &&
+                        client.level.getBlockState(pos.west()).getFluidState().isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    BlockPos tempPos = null;
+    void miningMode() {
+        BlockPos pos;
+        while ((pos = tempPos == null ? getBlockPos2() : tempPos) != null) {
+            if (client.player != null && (!canInteracted(pos) || isLimitedByTheNumberOfLayers(pos))) {
+                if (tempPos == null) continue;
+                tempPos = null;
+                continue;
+            }
+            if (client.level != null &&
+                    xuanQuFanWeiNei_p(pos) &&
+                    breakRestriction(client.level.getBlockState(pos).getBlock()) &&
+                    PlayerAction.waJue(pos)) {
+                tempPos = pos;
+                return;
+            }
+            tempPos = null;
+        }
+    }
+
+    public static boolean waJue(BlockPos pos) {
+        Minecraft client = Minecraft.getInstance();
+        ClientLevel world = client.level;
+        BlockState currentState = world.getBlockState(pos);
+        Block block = currentState.getBlock();
+        if (canBreakBlock(pos)) {
+            client.gameMode.continueDestroyBlock(pos, Direction.DOWN);
+            client.gameMode.stopDestroyBlock();
+            return world.getBlockState(pos).is(block);
+        }
+        return false;
+    }
+
+    public static boolean canBreakBlock(BlockPos pos) {
+        Minecraft client = ZxyUtils.client;
+        ClientLevel world = client.level;
+        BlockState currentState = world.getBlockState(pos);
+        boolean b = currentState.getBlock() instanceof LiquidBlock;
+        return !currentState.isAir() &&
+//                !currentState.isOf(Blocks.AIR) &&
+//                !currentState.isOf(Blocks.CAVE_AIR) &&
+//                !currentState.isOf(Blocks.VOID_AIR) &&
+                !(currentState.getBlock().defaultDestroyTime() == -1) &&
+                !(b) &&
+                !client.player.blockActionRestricted(client.level, pos, client.gameMode.getPlayerMode());
+    }
+
+    static boolean breakRestriction(Block block) {
+        if(EXCAVATE_LIMITER.getOptionListValue().equals(State.ExcavateListMode.TW)){
+            if (!FabricLoader.getInstance().isModLoaded("tweakeroo")) return true;
+//            return isPositionAllowedByBreakingRestriction(pos,Direction.UP);
+            UsageRestriction.ListType listType = BLOCK_TYPE_BREAK_RESTRICTION.getListType();
+            if (listType == UsageRestriction.ListType.BLACKLIST) {
+                return BLOCK_TYPE_BREAK_RESTRICTION_BLACKLIST.getStrings().stream()
+                        .noneMatch(string -> equalsBlockName(string,block));
+            } else if (listType == UsageRestriction.ListType.WHITELIST) {
+                return BLOCK_TYPE_BREAK_RESTRICTION_WHITELIST.getStrings().stream()
+                        .anyMatch(string -> equalsBlockName(string,block));
+            } else {
+                return true;
+            }
+        }else {
+            IConfigOptionListEntry optionListValue = EXCAVATE_LIMIT.getOptionListValue();
+            if (optionListValue == UsageRestriction.ListType.BLACKLIST) {
+                return EXCAVATE_BLACKLIST.getStrings().stream()
+                        .noneMatch(string -> equalsBlockName(string,block));
+            } else if (optionListValue == UsageRestriction.ListType.WHITELIST) {
+                return EXCAVATE_WHITELIST.getStrings().stream()
+                        .anyMatch(string -> equalsBlockName(string,block));
+            } else {
+                return true;
+            }
+        }
+    }
+    public static Vec3 itemPos = null;
+    //此模式依赖bug运行 请勿随意修改
+    public void bedrockMode() {
+
+        BreakingFlowController.tick();
+        int maxy = -9999;
+        BlockPos pos;
+        while ((pos = getBlockPos2()) != null && client.level != null) {
+            if (!bedrockCanInteracted(pos,getRage())) continue;
+            if (isLimitedByTheNumberOfLayers(pos)) continue;
+            BlockState currentState = client.level.getBlockState(pos);
+//                    if (currentState.isOf(Blocks.PISTON) && !data.world.getBlockState(pos.down()).isOf(Blocks.BEDROCK)) {
+            BlockPos finalPos = pos;
+            if ((currentState.is(Blocks.PISTON) || (currentState.is(Blocks.SLIME_BLOCK) &&
+                    cachedTargetBlockList.stream().allMatch(
+                            targetBlock -> targetBlock.temppos.stream().noneMatch(
+                                    blockPos -> blockPos.equals(finalPos)))))
+                    && !bedrockModeTarget(client.level.getBlockState(pos.below())) && xuanQuFanWeiNei_p(pos,3)) {
+                BreakingFlowController.addPosList(pos);
+            } else if (currentState.is(Blocks.PISTON_HEAD)) {
+                switchToItems(client.player, new Item[]{Items.AIR, Items.DIAMOND_PICKAXE});
+                ((IClientPlayerInteractionManager) client.gameMode)
+                        .rightClickBlock(pos, Direction.UP, Vec3.atLowerCornerOf(pos));
+            }
+
+//                    if (TempData.xuanQuFanWeiNei_p(pos) && currentState.isOf(Blocks.BEDROCK)  && ZxyUtils.canInteracted(pos,range-1.5) && !client.level.getBlockState(pos.above()).isOf(Blocks.BEDROCK)) {
+            if (xuanQuFanWeiNei_p(pos) &&
+                    bedrockModeTarget(currentState) &&
+                    bedrockCanInteracted(pos, getRage() - 1.5) &&
+                    !bedrockModeTarget(client.level.getBlockState(pos.above()))) {
+                if (maxy == -9999) maxy = pos.getY();
+                if (pos.getY() < maxy){
+                    //重置迭代器 如果不重置 继续根据上次结束的y轴递减会出事
+                    myBox.resetIterator();
+                    return;
+                }
+                BreakingFlowController.addBlockPosToList(pos);
+            }
+        }
+    }
+
+    static boolean isLimitedByTheNumberOfLayers(BlockPos pos){
+        return RENDER_LAYER_LIMIT.getBooleanValue() && !DataManager.getRenderLayerRange().isPositionWithinRange(pos);
+    }
+
+    public static int bedrockModeRange() {
+        return RANGE_MODE.getOptionListValue() == State.ListType.SPHERE ? getRage() : 6;
+    }
+
+    public static boolean bedrockModeTarget(BlockState block) {
+//        return LitematicaMixinMod.BEDROCK_LIST.getStrings().stream().anyMatch(string -> Registries.BLOCK.getId(block.getBlock()).toString().contains(string));
+        return BEDROCK_LIST.getStrings().stream().anyMatch(string -> equalsBlockName(string,block.getBlock()));
+    }
+    
+    public boolean verify() {
+        if (client.isLocalServer()) return true;
+        String address = null;
+        try {
+            address = Objects.requireNonNull(client.getCurrentServer()).ip.split(":")[0];
+        } catch (Exception e) {
+            return true;
+        }
+        if (Verify.getVerify() == null) {
+            return new Verify(address, client.player).tick(address);
+        } else {
+            return Verify.getVerify().tick(address);
+        }
+    }
+
+    public static int tickRate;
+
+    static Map<BlockPos,Integer> skipPosMap = new HashMap<>();
+    public static boolean printerMemorySync = false;
+
+
+    long endTime;
+    public static BlockPos easyPos = null;
+    public void myTick(){
+        ArrayList<BlockPos> deletePosList = new ArrayList<>();
+        skipPosMap.forEach((k,v) -> {
+            skipPosMap.put(k,v+1);
+            if(v >= PUT_COOLING.getIntegerValue()){
+                deletePosList.add(k);
+            }
+        });
+        for (BlockPos blockPos : deletePosList) {
+            skipPosMap.remove(blockPos);
+        }
+        if (PlacementGuide.createPortalTick != 1) { //TODO创建传送门可以尝试使用放置任务
+            PlacementGuide.createPortalTick = 1;
+        }
+
+        facingTimeOut();
+    }
+
+    static int facingTimeOut = 0;
+    //放置有朝向的方块需要等待一段时间，如果中途关闭打印机就会出现落枕现象。
+    public void facingTimeOut() {
+        if (currentAction == null) return;
+        facingTimeOut++;
+        if (facingTimeOut < 25) return;
+        currentAction = null;
+    }
+
+    //TODO 多放方块 错误方块概率较高。。。
+    public void tick() {
+        if (!verify()) return;
+        WorldSchematic worldSchematic = SchematicWorldHandler.getSchematicWorld();
+        LocalPlayer pEntity = client.player;
+        ClientLevel world = client.level;
+
+        range1 = PRINTER_RANGE.getIntegerValue();
+        yDegression = false;
+        endTime = System.currentTimeMillis() + PRINT_TIMEOUT.getIntegerValue();
+        tickRate = PRINT_INTERVAL.getIntegerValue();
+
+        tick = ++tick % Integer.MAX_VALUE;
+        boolean easyModeBooleanValue = EASY_MODE.getBooleanValue();
+        boolean forcedPlacementBooleanValue = FORCED_PLACEMENT.getBooleanValue();
+
+        if (tickRate != 0) {
+            if (currentAction != null){
+                switchToItems(pEntity, currentAction.clickItems);
+                currentAction.sendQueue(client.player);
+            }
+
+            if (tick % tickRate != 0) {
+                return;
+            }
+        }
+
+        if (currentAction != null) {
+            switchToItems(pEntity, currentAction.clickItems);
+            currentAction.sendQueue(client.player);
+        }
+
+        if (isOpenHandler) return;
+        if (switchItem()) return;
+
+        if(MODE_SWITCH.getOptionListValue().equals(State.ModeType.MULTI)){
+            boolean multiBreakBooleanValue = MULTI_BREAK.getBooleanValue();
+            if (BEDROCK_SWITCH.getBooleanValue()) {
+                yDegression = true;
+                bedrockMode();
+                if(multiBreakBooleanValue) return;
+            }
+            if (LitematicaMixinMod.EXCAVATE.getBooleanValue()) {
+                yDegression = true;
+                miningMode();
+                if(multiBreakBooleanValue) return;
+            }
+            if (LitematicaMixinMod.REPLACE_BLOCK.getBooleanValue()) {
+                replaceMode();
+                if(multiBreakBooleanValue) return;
+            }
+        }else if (PRINTER_MODE.getOptionListValue() instanceof State.PrintModeType modeType && modeType != PRINTER) {
+            switch (modeType){
+                case BEDROCK -> {
+                    yDegression = true;
+                    bedrockMode();
+                }
+                case EXCAVATE -> {
+                    yDegression = true;
+                    miningMode();
+                }
+                case REPLACE_BLOCK -> replaceMode();
+            }
+            return;
+        }
+
+        // forEachBlockInRadius:
+        BlockPos pos;
+        while ((pos = getBlockPos2()) != null) {
+            if (client.player != null && !canInteracted(pos)) continue;
+            if (!DataManager.getRenderLayerRange().isPositionWithinRange(pos)) continue;
+            BlockState requiredState = worldSchematic.getBlockState(pos);
+            //跳过放置
+            if (PUT_SKIP.getBooleanValue() &&
+                    PUT_SKIP_LIST.getStrings().stream().anyMatch(block -> equalsBlockName(block,requiredState.getBlock())))
+            {
+                continue;
+            }
+            //放置冷却
+            if (skipPosMap.containsKey(pos)) {
+                continue;
+            }else {
+                skipPosMap.put(pos,0);
+            }
+
+
+            if(USE_EASY_MODE.getBooleanValue()) {
+                easyPos = pos;
+                WorldUtilsAccessor.doEasyPlaceAction(client);
+                easyPos = null;
+                if(tickRate != 0) return;
+                else continue;
+            }
+            PlacementGuide.Action action = guide.getAction(world, worldSchematic, pos);
+            if (action == null || action.side == null || !playerHasAccessToItems(pEntity, action.clickItems)) continue;
+            // Handle shift and chest placement
+            // Won't be required if clickAction
+            if (Implementation.isInteractive(world.getBlockState(pos.relative(action.side)).getBlock())) {
+                action.shift = true;
+            }
+
+            if (!easyModeBooleanValue && isFacingBlock(requiredState) && currentAction != null) {
+                continue;
+            }
+            Direction lookDir = action.getLookDirection();
+            //确认侦测器看向方块是否正确
+            if (requiredState.is(Blocks.OBSERVER) && PUT_TESTING.getBooleanValue()) {
+                BlockPos offset = pos.relative(lookDir);
+                if (isSchematicBlock(offset)) {
+                    BlockState state1 = world.getBlockState(offset);
+                    BlockState state2 = worldSchematic.getBlockState(offset);
+                    State state = State.get(state1, state2);
+                    if (state != State.CORRECT) continue;
+                }
+            }
+            if (forcedPlacementBooleanValue) action.shift = true;
+            //发送放置准备
+            action.sendPlacementPreparation(pEntity);
+            action.queueAction(pos);
+
+            Vec3 hitModifier = usePrecisionPlacement(pos, requiredState);
+            if (hitModifier != null) {
+                action.hitModifier = hitModifier;
+                action.usePrecisionPlacement = true;
+            }
+
+            if (tickRate == 0) {
+                //处理不能快速放置的方块
+                if (hitModifier == null && isFacingBlock(requiredState)) {
+                    facingTimeOut = 0;
+                    currentAction = action;
+                    continue;
+                }
+
+                action.sendQueue(pEntity);
+                continue;
+            }
+            facingTimeOut = 0;
+            currentAction = action;
+            return;
+        }
+    }
+    public boolean isFacingBlock(BlockState state){
+        return state.is(Blocks.PISTON) ||
+                state.is(Blocks.STICKY_PISTON) ||
+                //#if MC > 12002
+                state.is(Blocks.CRAFTER) ||
+                //#endif
+                state.is(Blocks.OBSERVER) ||
+                state.is(Blocks.DROPPER) ||
+                state.is(Blocks.DISPENSER);
+    }
+
+    public static boolean isSchematicBlock(BlockPos offset) {
+        SchematicPlacementManager schematicPlacementManager = DataManager.getSchematicPlacementManager();
+        //#if MC < 11900
+        //$$ List<SchematicPlacementManager.PlacementPart> allPlacementsTouchingChunk = schematicPlacementManager.getAllPlacementsTouchingSubChunk(new SubChunkPos(offset));
+        //#else
+        List<SchematicPlacementManager.PlacementPart> allPlacementsTouchingChunk = schematicPlacementManager.getAllPlacementsTouchingChunk(offset);
+        //#endif
+
+        for (SchematicPlacementManager.PlacementPart placementPart : allPlacementsTouchingChunk) {
+            if (placementPart.getBox().contains(offset)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public Vec3 usePrecisionPlacement(BlockPos pos,BlockState stateSchematic){
+        if (EASY_MODE.getBooleanValue() && stateSchematic != null && pos != null) {
+            EasyPlaceProtocol protocol = PlacementHandler.getEffectiveProtocolVersion();
+            Vec3 hitPos = Vec3.atLowerCornerOf(pos);
+            if (protocol == EasyPlaceProtocol.V3)
+            {
+                return applyPlacementProtocolV3(pos, stateSchematic, hitPos);
+            }
+            else if (protocol == EasyPlaceProtocol.V2)
+            {
+                // Carpet Accurate Block Placement protocol support, plus slab support
+                return applyCarpetProtocolHitVec(pos, stateSchematic, hitPos);
+            }
+        }
+        return null;
+    }
+
+    public LinkedList<BlockPos> siftBlock(String blockName) {
+        LinkedList<BlockPos> blocks = new LinkedList<>();
+        AreaSelection i = DataManager.getSelectionManager().getCurrentSelection();
+        List<Box> boxes;
+        if (i == null) return blocks;
+        boxes = i.getAllSubRegionBoxes();
+        for (Box box : boxes) {
+            MyBox myBox = new MyBox(box);
+            for (BlockPos pos : myBox) {
+                BlockState state = null;
+                if (client.level != null) {
+                    state = client.level.getBlockState(pos);
+                }
+//                        Block block = state.getBlock();
+//                        if (Registries.BLOCK.getId(block).toString().contains(blockName)) {
+                if (state != null && equalsBlockName(blockName, state.getBlock())) {
+                    blocks.add(pos);
+                }
+            }
+        }
+        return blocks;
+    }
+
+    public static ItemStack yxcfItem; //有序存放临时存储
+
+    public void swapHandWithSlot(LocalPlayer player, int slot) {
+        ItemStack stack = Implementation.getInventory(player).getItem(slot);
+        InventoryUtils.setPickedItemToHand(stack, client);
+    }
+}

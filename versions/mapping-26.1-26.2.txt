@@ -1,0 +1,3 @@
+fi.dy.masa.litematica.util.WorldUtils applyCarpetProtocolHitVec() fi.dy.masa.litematica.util.EasyPlaceUtils applyCarpetProtocolHitVec()
+fi.dy.masa.litematica.util.WorldUtils applyPlacementProtocolV3() fi.dy.masa.litematica.util.EasyPlaceUtils applyPlacementProtocolV3()
+fi.dy.masa.malilib.util.position.IntBoundingBox containsPos() contains()

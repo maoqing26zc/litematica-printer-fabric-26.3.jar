@@ -1,0 +1,31 @@
+plugins {
+    id("maven-publish")
+    id("fabric-loom").version("1.17-SNAPSHOT").apply(false)
+    id("net.fabricmc.fabric-loom-remap").version("1.15-SNAPSHOT").apply(false)
+    id("org.ajoberstar.grgit").version("5.2.0")
+    id("com.replaymod.preprocess").version("c5abb4fb12")
+}
+
+preprocess {
+    strictExtraMappings = false
+
+    // 仅保留 26.3 节点用于本地构建（其余旧版本依赖需要 GitHub Packages 鉴权，本机无法解析）
+    def mc260300 = createNode("26.3", 26_03_00, "mojang")
+
+    for (final def node in getNodes()) {
+        findProject(node.project).ext.mcVersion = node.mcVersion
+    }
+}
+
+tasks.register("cleanPreprocessSources") {
+    it.group("${project.mod_id}")
+
+    doFirst {
+        subprojects {
+            def path = project.projectDir.toPath().resolve("build/preprocessed")
+            if (path.toFile().isDirectory()) {
+                path.toFile().deleteDir()
+            }
+        }
+    }
+}

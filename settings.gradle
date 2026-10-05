@@ -1,0 +1,80 @@
+import java.nio.file.Files
+
+pluginManagement {
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        gradlePluginPortal()
+
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+
+        maven {
+            name("Jitpack")
+            url("https://jitpack.io")
+        }
+
+        maven {
+            name("Nyan Maven")
+            url("https://maven.hendrixshen.top")
+        }
+
+        maven {
+            name("Cotton")
+            url("https://server.bbkr.space/artifactory/libs-release")
+        }
+    }
+    resolutionStrategy {
+        eachPlugin {
+            switch (requested.id.id) {
+                case "com.replaymod.preprocess": {
+                    useModule("com.github.Fallen-Breath:preprocessor:${requested.version}")
+                    break
+                }
+            }
+        }
+    }
+}
+
+// 本地构建只保留 26.3（其余旧版本的目标依赖需要 GitHub Packages 鉴权，本机无法解析）
+def versions = Arrays.asList(
+        "26.3",
+)
+
+for (String version : versions) {
+    include(":$version")
+    def proj = project(":$version")
+    proj.projectDir = file("versions/$version")
+    proj.buildFileName = "../../common.gradle"
+}
+
+include(":fabricWrapper")
+
+def getDailyBuildNumber() {
+    def propsFile = rootDir.toPath().resolve('fabricWrapper/build-counter.properties')
+    Properties props = new Properties()
+    def today = new Date().format("yyyyMMdd", TimeZone.getTimeZone("GMT+08:00"))
+    int count = 1
+
+    if (Files.exists(propsFile)) {
+        props.load(propsFile.toFile().newInputStream())
+        def lastDate = props.getProperty('date')
+        if (lastDate == today) {
+            count = props.getProperty('count').toInteger() + 1
+        } else {
+            count = 1
+        }
+    }
+
+    props.setProperty('date', today)
+    props.setProperty('count', count.toString())
+    props.store(propsFile.toFile().newOutputStream(), "Daily build counter")
+
+    return count.toString()
+}
+
+def time = new Date().format("yyyyMMdd", TimeZone.getTimeZone("GMT+08:00"))
+def buildNumber = getDailyBuildNumber()
+gradle.ext.modVersion = "${mod_version}+${time}.${buildNumber}"

@@ -1,0 +1,964 @@
+package me.aleksilassila.litematica.printer.printer;
+
+import fi.dy.masa.litematica.world.WorldSchematic;
+import fi.dy.masa.malilib.config.IConfigOptionListEntry;
+import fi.dy.masa.malilib.config.options.ConfigOptionList;
+import me.aleksilassila.litematica.printer.LitematicaMixinMod;
+import me.aleksilassila.litematica.printer.interfaces.IClientPlayerInteractionManager;
+import me.aleksilassila.litematica.printer.interfaces.Implementation;
+import me.aleksilassila.litematica.printer.mixin.FlowerPotBlockAccessor;
+import me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction;
+import me.aleksilassila.litematica.printer.printer.zxy.inventory.SwitchItem;
+//#if MC > 260200
+// 26.3 起 Fabric 不再提供 AxeItemAccessor（MC 已移除 AxeItem），改用 Strippables 工具类
+//#else
+//$$ import net.fabricmc.fabric.mixin.content.registry.AxeItemAccessor;
+//#endif
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.FrontAndTop;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.*;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.*;
+import net.minecraft.world.level.material.*;
+import net.minecraft.world.level.portal.PortalShape;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.Level;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import java.util.*;
+
+import static me.aleksilassila.litematica.printer.printer.Printer.*;
+import static me.aleksilassila.litematica.printer.printer.qwer.PrintWater.*;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction.excavateBlock;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction.setShift;
+import static me.aleksilassila.litematica.printer.printer.zxy.inventory.InventoryUtils.switchToItems;
+import static net.minecraft.world.level.block.state.properties.AttachFace.WALL;
+
+public class PlacementGuide extends PrinterUtils {
+    /**
+     * 26.3 起 MC 移除了 AxeItem（连带 Fabric 的 AxeItemAccessor），
+     * 这里改为按原版 stripped_ 命名约定从方块注册表重建「原木 -> 去皮原木」映射。
+     */
+    private static Map<Block, Block> getStrippables() {
+        //#if MC > 260200
+        return me.aleksilassila.litematica.printer.printer.zxy.Utils.Strippables.get();
+        //#else
+        //$$ return AxeItemAccessor.getStrippables();
+        //#endif
+    }
+
+    @NotNull
+    protected final Minecraft client;
+    public static long createPortalTick = 1;
+
+    public PlacementGuide(@NotNull Minecraft client) {
+        this.client = client;
+    }
+
+    public @Nullable Action getAction(Level world, WorldSchematic worldSchematic, BlockPos pos) {
+        for (ClassHook hook : ClassHook.values()) {
+            for (Class<?> clazz : hook.classes) {
+                if (clazz != null  && clazz.isInstance(worldSchematic.getBlockState(pos).getBlock())) {
+                    return buildAction(world, worldSchematic, pos, hook);
+                }
+            }
+        }
+
+        return buildAction(world, worldSchematic, pos, ClassHook.DEFAULT);
+    }
+    public @Nullable ClassHook getClassHook(BlockState requiredState) {
+        for (ClassHook hook : ClassHook.values()) {
+            for (Class<?> clazz : hook.classes) {
+                if (clazz != null  && clazz.isInstance(requiredState.getBlock())) {
+                    return hook;
+                }
+            }
+        }
+        return ClassHook.DEFAULT;
+    }
+
+//    public static Placement getPlacement(BlockState requiredState, Minecraft client) {
+//        Placement placement = _getPlacement(requiredState, client);
+//        return placement.setItem(placement.item == null ? requiredState.getBlock().asItem() : placement.item);
+//    }
+    //打破过的冰
+    public static Map<BlockPos,Integer> posMap = new HashMap<>();
+    public static boolean breakIce = false;
+    public @Nullable Action water(BlockState requiredState,BlockState currentState ,BlockPos pos){
+        Integer i = posMap.get(pos);
+        if (i != null){
+            posMap.put(pos,i+1);
+            if(posMap.get(pos) > 10) posMap.remove(pos);
+            if (posMap.size() > 10) {
+                Set<Map.Entry<BlockPos, Integer>> entries = posMap.entrySet();
+                ArrayList<BlockPos> removeList = new ArrayList<>();
+                entries.forEach(v -> {
+                    if (client.player.getEyePosition().distanceToSqr(Vec3.atLowerCornerOf(v.getKey())) < 6 * 6) removeList.add(v.getKey());
+                });
+                removeList.forEach(v -> posMap.remove(v));
+            }
+        }
+
+        //产生水有延迟，需要等待一会儿
+        if(currentState.is(Blocks.ICE)){
+            if (client.player != null) searchPickaxes(client.player);
+            BlockPos tempPos;
+            if (!posMap.containsKey(pos) && (tempPos = excavateBlock(pos)) != null) {
+                posMap.put(tempPos,0);
+                breakIce = true;
+                return null;
+            }
+            return null;
+        }
+        if (!spawnWater(pos)) return null;
+
+        if (posMap.keySet().stream().anyMatch(p -> p.equals(pos))) return null;
+        State state = State.get(requiredState, currentState);
+        if (state != State.MISSING_BLOCK) return null;
+
+        Direction look = null;
+        for (Property<?> prop : requiredState.getProperties()) {
+            //#if MC > 12101
+            if (prop instanceof EnumProperty<?> enumProperty && enumProperty.getValueClass().equals(Direction.class) && prop.getName().equalsIgnoreCase("FACING")) {
+            //#else
+            //$$ if (prop instanceof EnumProperty<?> && prop.getName().equalsIgnoreCase("FACING")) {
+            //#endif
+                look = ((Direction) requiredState.getValue(prop)).getOpposite();
+            }
+        }
+        Action placement = new Action().setLookDirection(look);
+        placement.setItem(Items.ICE);
+        return placement;
+    }
+
+    public @Nullable Action buildAction(Level world, WorldSchematic worldSchematic, BlockPos pos, ClassHook requiredType) {
+        Action action = buildAction(world, world.getBlockState(pos), worldSchematic.getBlockState(pos), pos, requiredType);
+        if(action == null) return null;
+        Direction side = action.getValidSide((ClientLevel) world, pos);
+        if (side != null) action.side = side.getOpposite();
+        action.hitModifier = action.getSides().get(side);
+        if (action.clickItems == null) action.clickItems = action.getRequiredItems(worldSchematic.getBlockState(pos).getBlock());
+        return action;
+    }
+    @SuppressWarnings("EnhancedSwitchMigration")
+    public @Nullable Action buildAction(Level world, BlockState currentState, BlockState requiredState, BlockPos pos, ClassHook requiredType) {
+
+        if (LitematicaMixinMod.PRINT_WATER_LOGGED_BLOCK.getBooleanValue()
+                && canWaterLogged(requiredState)
+                && !canWaterLogged(currentState)){
+            Action water = water(requiredState, currentState, pos);
+            if(breakIce){
+                breakIce = false;
+            }else return water;
+        }
+
+        if (!requiredState.canSurvive(world, pos)) {
+            return null;
+        }
+
+        State state = State.get(requiredState, currentState);
+
+        if (state == State.CORRECT) return null;
+        else if (state == State.MISSING_BLOCK &&
+                !requiredState.canSurvive(world, pos)) {
+            return null;
+        }
+
+        if (state == State.MISSING_BLOCK) {
+            switch (requiredType) {
+                case WALLTORCH:{
+                    Direction facing = (Direction)getPropertyByName(requiredState, "FACING");
+                    if(facing != null){
+                       return new Action().setSides(facing.getOpposite()).setRequiresSupport();
+                    }
+                    break;
+                }
+                case AMETHYST: {
+                    return new Action()
+                            .setSides(((Direction) getPropertyByName(requiredState, "FACING"))
+                                    .getOpposite())
+                            .setRequiresSupport();
+                }
+                case ROD:
+                case SHULKER: {
+                    return new Action().setSides(
+                            ((Direction) getPropertyByName(requiredState, "FACING"))
+                                    .getOpposite());
+                }
+                case SLAB: {
+                    return new Action().setSides(getSlabSides(world, pos, requiredState.getValue(SlabBlock.TYPE)));
+                }
+                case STAIR: {
+                    Direction half = getHalf(requiredState.getValue(StairBlock.HALF));
+
+                    Map<Direction, Vec3> sides = new HashMap<>();
+                    for (Direction direction : horizontalDirections) {
+                        sides.put(direction, Vec3.atLowerCornerOf(half.getUnitVec3i()).scale(0.25));
+                    }
+
+                    sides.put(half, new Vec3(0, 0, 0));
+
+                    return new Action()
+                        .setSides(sides)
+                        .setLookDirection(requiredState.getValue(StairBlock.FACING));
+                }
+                case TRAPDOOR: {
+                    Direction half = getHalf(requiredState.getValue(TrapDoorBlock.HALF));
+                    Map<Direction, Vec3> sides = new HashMap<>(){{
+                        put(half,
+                            Vec3.atLowerCornerOf(half.getUnitVec3i()).scale(0.25));
+                        put(half, new Vec3(0, 0, 0));
+                    }};
+
+                    return new Action()
+                            .setSides(sides)
+                            .setLookDirection(requiredState.getValue(StairBlock.FACING).getOpposite());
+                }
+                case PILLAR: {
+                    Action action = new Action().setSides(requiredState.getValue(RotatedPillarBlock.AXIS));
+
+                    // If is stripped log && should use normal log instead
+                    if (getStrippables().containsValue(requiredState.getBlock()) &&
+                            LitematicaMixinMod.STRIP_LOGS.getBooleanValue()) {
+                        Block stripped = requiredState.getBlock();
+
+                        for (Block log : getStrippables().keySet()) {
+                            if (getStrippables().get(log) != stripped) continue;
+
+                            if (!playerHasAccessToItem(client.player, stripped.asItem()) &&
+                                    playerHasAccessToItem(client.player, log.asItem())) {
+                                action.setItem(log.asItem());
+                            }
+                            break;
+
+                        }
+                    }
+
+                    return action;
+                }
+                case ANVIL: {
+                    return new Action().setLookDirection(requiredState.getValue(AnvilBlock.FACING).getCounterClockWise()).setSides(Direction.UP);
+                }
+                case HOPPER:
+                case COCOA: {
+                    return new Action().setSides((Direction) getPropertyByName(requiredState, "FACING"));
+                }
+                case LEVER:
+                case BUTTON: {
+                    Direction side;
+                    switch ((AttachFace) getPropertyByName(requiredState, "FACE")) {
+                        case FLOOR: {
+                            side = Direction.DOWN;
+                            break;
+                        }
+                        case CEILING: {
+                            side = Direction.UP;
+                            break;
+                        }
+                        default: {
+                            side = ((Direction) getPropertyByName(requiredState, "FACING")).getOpposite();
+                            break;
+                        }
+                    }
+
+                    Direction look = getPropertyByName(requiredState, "FACE") == WALL ?
+                            null : (Direction) getPropertyByName(requiredState, "FACING");
+
+                    return new Action().setSides(side).setLookDirection(look).setRequiresSupport();
+                }
+                case GRINDSTONE :{ // Tese are broken
+                    Direction side = switch ((AttachFace) getPropertyByName(requiredState, "FACE")) {
+                        case FLOOR -> Direction.DOWN;
+                        case CEILING -> Direction.UP;
+                        default -> (Direction) getPropertyByName(requiredState, "FACING");
+                    };
+
+                    Direction look = getPropertyByName(requiredState, "FACE") == WALL ?
+                            null : (Direction) getPropertyByName(requiredState, "FACING");
+
+                    Map<Direction,Vec3> sides = new HashMap<>();
+                    sides.put(Direction.DOWN,Vec3.atLowerCornerOf(side.getUnitVec3i()).scale(0.5));
+
+                    return new Action().setSides(sides).setLookDirection(look);
+                }
+                case GATE:
+                case OBSERVER:
+                case CAMPFIRE: {
+                    return new Action()
+                            .setLookDirection((Direction) getPropertyByName(requiredState, "FACING"));
+                }
+                case BED: {
+                    if (requiredState.getValue(BedBlock.PART) != BedPart.FOOT) {
+                        break;
+                    } else {
+                        return new Action().setLookDirection(requiredState.getValue(BedBlock.FACING));
+                    }
+                }
+                case BELL: {
+                    Direction side;
+                    switch (requiredState.getValue(BellBlock.ATTACHMENT)) {
+                        case FLOOR: {
+                            side = Direction.DOWN;
+                            break;
+                        }
+                        case CEILING: {
+                            side = Direction.UP;
+                            break;
+                        }
+                        default: {
+                            side = requiredState.getValue(BellBlock.FACING);
+                            break;
+                        }
+                    }
+
+                    Direction look = requiredState.getValue(BellBlock.ATTACHMENT) != BellAttachType.SINGLE_WALL &&
+                            requiredState.getValue(BellBlock.ATTACHMENT) != BellAttachType.DOUBLE_WALL ?
+                            requiredState.getValue(BellBlock.FACING) : null;
+
+                    return new Action().setSides(side).setLookDirection(look);
+                }
+                case DOOR: {
+                    Map<Direction, Vec3> sides = new HashMap<>();
+
+                    Direction facing, hinge;
+                    facing = hinge = requiredState.getValue(DoorBlock.FACING);
+
+                    Vec3 hingeVec = new Vec3(
+                            0.25 , 0, 0.25);
+
+                    if (requiredState.getValue(DoorBlock.HINGE) == DoorHingeSide.RIGHT) {
+                        hinge = hinge.getClockWise();
+                    } else {
+                        hinge = hinge.getCounterClockWise();
+                    }
+
+                    sides.put(hinge, hingeVec);
+                    sides.put(Direction.DOWN, hingeVec);
+                    sides.put(facing, hingeVec);
+
+                    return new Action().setLookDirection(requiredState.getValue(DoorBlock.FACING)).setSides(sides).setRequiresSupport();
+                }
+                case WALLSKULL: {
+                    return new Action().setSides(requiredState.getValue(WallSkullBlock.FACING).getOpposite());
+                }
+                case FARMLAND:
+                case DIRT_PATH: {
+                    return new Action().setItem(Items.DIRT);
+                }
+                case BIG_DRIPLEAF_STEM: {
+                    return new Action().setItem(Items.BIG_DRIPLEAF);
+                }
+                case NETHER_PORTAL_BLOCK: {
+
+                    boolean canCreatePortal = PortalShape.findEmptyPortalShape(world, pos, Direction.Axis.X).isPresent();
+                    if (canCreatePortal && createPortalTick == 1) {
+                        createPortalTick = 0;
+                        return new Action().setItems(Items.FLINT_AND_STEEL,Items.FIRE_CHARGE).setRequiresSupport();
+                    }
+                    break;
+                }
+                //#if MC > 12002
+                case CRAFTER: {
+                    Action action = new Action().setItem(Items.CRAFTER);
+                    FrontAndTop orientation = requiredState.getValue(BlockStateProperties.ORIENTATION);
+                    Direction look = orientation.front().getOpposite();
+                    action.setLookDirection(look);
+                    Direction side = orientation.top();
+                    if (look == Direction.DOWN || look == Direction.UP) {
+                        action.setLookDirection2(side);
+                    }
+                    return action;
+                }
+                //#endif
+                case SKIP: {
+                    break;
+                }
+                case FLUID: {
+                    break;
+                }
+                case TORCH: {
+                        return new Action().setRequiresSupport().setSides(Direction.DOWN);
+                }
+                case DEFAULT:
+                default: { // Try to guess how the rest of the blocks are placed.
+                    Direction look = null;
+
+                    for (Property<?> prop : requiredState.getProperties()) {
+                        if (prop instanceof EnumProperty<?> enumProperty && enumProperty.getValueClass().equals(Direction.class) && prop.getName().equalsIgnoreCase("FACING")) {
+                            look = ((Direction) requiredState.getValue(prop)).getOpposite();
+                        }
+//                        if (requiredState.getValue(CrafterBlock.CRAFTING)) return null;
+//                        if (prop.getName().equalsIgnoreCase("orientation")) return null;
+
+                    }
+
+                    Action placement = new Action().setLookDirection(look).setItem(requiredState.getBlock().asItem());
+                    // If required == dirt path place dirt
+                    if (requiredState.getBlock().equals(Blocks.DIRT_PATH) && !playerHasAccessToItem(client.player, requiredState.getBlock().asItem())) {
+                        placement.setItem(Items.DIRT);
+                    }
+
+                    if (requiredState.hasProperty(ChestBlock.TYPE)) {
+                        switch (requiredState.getValue(ChestBlock.TYPE)) {
+                            case SINGLE:
+                            case RIGHT: {
+                                placement.side = requiredState.getValue(ChestBlock.FACING).getClockWise();
+                                placement.shift = true;
+                                break;
+                            }
+                            case LEFT: {
+                                placement.side = requiredState.getValue(ChestBlock.FACING).getCounterClockWise();
+                                placement.shift = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    return placement;
+                }
+            }
+        } else if (state == State.WRONG_STATE) {
+            switch (requiredType) {
+                case SLAB: {
+                    if (requiredState.getValue(SlabBlock.TYPE) == SlabType.DOUBLE) {
+//                        SlabType requiredHalf1 = currentState.getValue(SlabBlock.TYPE) == SlabType.TOP ? SlabType.BOTTOM : SlabType.TOP;
+//                        return new Action().setSides(getSlabSides(world, pos, requiredHalf1));
+                        Direction requiredHalf = currentState.getValue(SlabBlock.TYPE) == SlabType.BOTTOM ? Direction.DOWN : Direction.UP;
+
+                        return new Action().setSides(requiredHalf);
+                    }
+
+                    break;
+                }
+                case SNOW: {
+                    int layers = currentState.getValue(SnowLayerBlock.LAYERS);
+                    if (layers < requiredState.getValue(SnowLayerBlock.LAYERS)) {
+                        Map<Direction, Vec3> sides = new HashMap<>(){{
+                            put(Direction.UP, new Vec3(0,  (layers / 8d) - 1, 0));
+                        }};
+                        return new ClickAction().setItem(Items.SNOW).setSides(sides);
+                    }
+
+                    break;
+                }
+                case DOOR: {
+                    if (requiredState.getValue(DoorBlock.OPEN) != currentState.getValue(DoorBlock.OPEN)){
+                        if(requiredState.getBlock() instanceof DoorBlock doorBlock){
+                            //#if MC >= 12001
+                            if (!doorBlock.type().canOpenByHand()) break;
+                            //#else
+                            //$$ if (requiredState.getMaterial() == Material.METAL) {
+                            //$$     break;
+                            //$$ }
+                            //#endif
+                        }
+
+                        return new ClickAction();
+                    }
+
+                    break;
+                }
+                case LEVER: {
+                    if (requiredState.getValue(LeverBlock.POWERED) != currentState.getValue(LeverBlock.POWERED))
+                        return new ClickAction();
+
+                    break;
+                }
+                case CANDLES: {
+                    if ((Integer) getPropertyByName(currentState, "CANDLES") < (Integer) getPropertyByName(requiredState, "CANDLES"))
+                        return new ClickAction().setItem(requiredState.getBlock().asItem());
+
+                    break;
+                }
+                case PICKLES: {
+                    if (currentState.getValue(SeaPickleBlock.PICKLES) < requiredState.getValue(SeaPickleBlock.PICKLES))
+                        return new ClickAction().setItem(Items.SEA_PICKLE);
+
+                    break;
+                }
+                case REPEATER: {
+                    if (!Objects.equals(requiredState.getValue(RepeaterBlock.DELAY), currentState.getValue(RepeaterBlock.DELAY)))
+                        return new ClickAction();
+
+                    break;
+                }
+                case COMPARATOR: {
+                    if (requiredState.getValue(ComparatorBlock.MODE) != currentState.getValue(ComparatorBlock.MODE))
+                        return new ClickAction();
+
+                    break;
+                }
+                case TRAPDOOR: {
+                    if (requiredState.getValue(TrapDoorBlock.OPEN) != currentState.getValue(TrapDoorBlock.OPEN)){
+                        if(requiredState.getBlock() instanceof TrapDoorBlock trapDoorBlock){
+                            //#if MC >= 12001
+                            if (!trapDoorBlock.type.canOpenByHand()) break;
+                            //#else
+                            //$$ if (requiredState.getMaterial() == Material.METAL) break;
+                            //#endif
+                        }
+                        return new ClickAction();
+                    }
+
+                    break;
+                }
+                case GATE: {
+                    if (requiredState.getValue(FenceGateBlock.OPEN) != currentState.getValue(FenceGateBlock.OPEN))
+                        return new ClickAction();
+
+                    break;
+                }
+                case NOTE_BLOCK: {
+                    if (!Objects.equals(requiredState.getValue(NoteBlock.NOTE), currentState.getValue(NoteBlock.NOTE)))
+                        return new ClickAction();
+                    break;
+                }
+                case CAMPFIRE: {
+                    if (requiredState.getValue(CampfireBlock.LIT) != currentState.getValue(CampfireBlock.LIT))
+                        return new ClickAction().setItems(Implementation.SHOVELS);
+
+                    break;
+                }
+                case END_PORTAL_FRAME: {
+                    if (requiredState.getValue(EndPortalFrameBlock.HAS_EYE) && !currentState.getValue(EndPortalFrameBlock.HAS_EYE))
+                        return new ClickAction().setItem(Items.ENDER_EYE);
+
+                    break;
+                }
+                case FLOWER_POT: {
+                    Block content = ((FlowerPotBlockAccessor) requiredState).getContent();
+
+                    if (content != null && content != Blocks.AIR) {
+                        return new Action().setItem(content.asItem());
+                    }
+
+                    break;
+                }
+                case DEFAULT: {
+                    if (currentState.getBlock().equals(Blocks.DIRT) && requiredState.getBlock().equals(Blocks.FARMLAND)) {
+                        return new ClickAction().setItems(Implementation.HOES);
+                    } else if (currentState.getBlock().equals(Blocks.DIRT) && requiredState.getBlock().equals(Blocks.DIRT_PATH)) {
+                        return new ClickAction().setItems(Implementation.SHOVELS);
+                    }
+
+                    break;
+                }
+            }
+        } else if (state == State.WRONG_BLOCK) {
+            switch (requiredType) {
+                case FARMLAND: {
+                    Block[] soilBlocks = new Block[]{Blocks.GRASS_BLOCK, Blocks.DIRT, Blocks.DIRT_PATH};
+
+                    for (Block soilBlock : soilBlocks) {
+                        if (currentState.getBlock().equals(soilBlock))
+                            return new ClickAction().setItems(Implementation.HOES);
+                    }
+
+                    break;
+                }
+                case DIRT_PATH: {
+                    Block[] soilBlocks = new Block[]{Blocks.GRASS_BLOCK, Blocks.DIRT,
+                            Blocks.COARSE_DIRT, Blocks.ROOTED_DIRT, Blocks.MYCELIUM, Blocks.PODZOL};
+
+                    for (Block soilBlock : soilBlocks) {
+                        if (currentState.getBlock().equals(soilBlock))
+                            return new ClickAction().setItems(Implementation.SHOVELS);
+                    }
+
+                    break;
+                }
+                case PILLAR: {
+                    Block stripped = getStrippables().get(currentState.getBlock());
+                    if (stripped != null && stripped == requiredState.getBlock()) {
+                        return new ClickAction().setItems(Implementation.AXES);
+                    }
+                    excavateErrorSchematicBlock(pos,requiredState);
+                    break;
+                }
+                case FLUID:{
+
+                }
+                default: {
+                    excavateErrorSchematicBlock(pos,requiredState);
+                    return null;
+                }
+            }
+
+        }
+
+        return null;
+    }
+    public static void excavateErrorSchematicBlock(BlockPos pos, BlockState requiredState){
+        IConfigOptionListEntry optionListValue = LitematicaMixinMod.BREAK_ERROR_BLOCK.getOptionListValue();
+        
+        boolean shouldBreak = switch ((State.BreakSchematicBlockType) optionListValue) {
+            case NOT -> false;
+            case ALL -> true;
+            case ERROR_BLOCK -> Printer.isSchematicBlock(pos) && !requiredState.isAir();
+            case EXCESS_BLOCKS -> Printer.isSchematicBlock(pos) && requiredState.isAir();
+            default -> throw new IllegalStateException("Unexpected value: " + optionListValue);
+        };
+        
+        if (shouldBreak && canBreakBlock(pos)) {
+            excavateBlock(pos);
+        }
+    }
+
+    public static class Action {
+        public Map<Direction, Vec3> sides;
+        public Vec3 hitModifier;
+        public BlockPos target;
+
+        public Direction side;
+        public Direction lookDirection;
+        public Direction lookDirection2;
+        @Nullable
+        public Item[] clickItems; // null == any
+
+        public boolean usePrecisionPlacement = false;
+        public boolean shift = false;
+        public boolean requiresSupport = false;
+
+        // If true, click target block, not neighbor
+
+        public Action() {
+            this.sides = new HashMap<>();
+            for (Direction direction : Direction.values()) {
+                sides.put(direction, new Vec3(0, 0, 0));
+            }
+        }
+
+        public Action(Direction side) {
+            this(side, new Vec3(0, 0, 0));
+        }
+
+        /**
+         * {@link Action#Action(Direction, Vec3)}
+         */
+        public Action(Map<Direction, Vec3> sides) {
+            this.sides = sides;
+        }
+
+        /**
+         *
+         * @param side The side pointing to the block that should be clicked
+         * @param modifier defines where should be clicked exactly. Vector's
+         *                 x component defines left and right offset, y
+         *                 defines height variation and z how far away from
+         *                 player. (0, 0, 0) means click happens in the middle
+         *                 of the side that is being clicked. (0.5, -0.5, 0)
+         *                 would mean right bottom corner when clicking a
+         *                 vertical side. Therefore, z should only be used when
+         *                 clicking horizontal surface.
+         */
+        public Action(Direction side, Vec3 modifier) {
+            this.sides = new HashMap<>();
+            this.sides.put(side, modifier);
+        }
+
+
+        public Action(Direction.Axis axis) {
+            this.sides = new HashMap<>();
+
+            for (Direction d : Direction.values()) {
+                if (d.getAxis() == axis) {
+                    sides.put(d, new Vec3(0, 0, 0));
+                }
+            }
+        }
+
+        public @Nullable Direction getLookDirection() {
+            return lookDirection;
+        }
+
+        public @Nullable Item[] getRequiredItems(Block backup) {
+            return clickItems == null ? new Item[]{backup.asItem()} : clickItems;
+        }
+
+        public @NotNull Map<Direction, Vec3> getSides() {
+            if (this.sides == null) {
+                this.sides = new HashMap<>();
+                for (Direction d : Direction.values()) {
+                    this.sides.put(d, new Vec3(0, 0, 0));
+                }
+            }
+
+            return this.sides;
+        }
+
+        public @Nullable Direction getValidSide(ClientLevel world, BlockPos pos) {
+            Map<Direction, Vec3> sides = getSides();
+
+            List<Direction> validSides = new ArrayList<>();
+
+            for (Direction side : sides.keySet()) {
+                if (LitematicaMixinMod.PRINT_IN_AIR.getBooleanValue() && !this.requiresSupport) {
+                    return side;
+                } else {
+                    BlockPos neighborPos = pos.relative(side);
+                    BlockState neighborState = world.getBlockState(neighborPos);
+
+                    if (neighborState.hasProperty(SlabBlock.TYPE) && neighborState.getValue(SlabBlock.TYPE) != SlabType.DOUBLE) {
+                        continue;
+                    }
+
+                    if (canBeClicked(world, pos.relative(side)) && // Handle unclickable grass for example
+                            !isReplaceable(world.getBlockState(pos.relative(side))))
+                        validSides.add(side);
+                }
+            }
+
+            if (validSides.isEmpty()) return null;
+
+            // Try to pick a side that doesn't require shift
+            for (Direction validSide : validSides) {
+                if (!Implementation.isInteractive(world.getBlockState(pos.relative(validSide)).getBlock())) {
+                    return validSide;
+                }
+            }
+
+            return validSides.get(0);
+        }
+
+        public static boolean isReplaceable(BlockState state){
+            //#if MC < 11904
+            //$$ return state.getMaterial().isReplaceable();
+            //#else
+            return state.canBeReplaced();
+            //#endif
+        }
+
+        public Action setSides(Direction.Axis... axis) {
+            Map<Direction, Vec3> sides = new HashMap<>();
+
+            for (Direction.Axis a : axis) {
+                for (Direction d : Direction.values()) {
+                    if (d.getAxis() == a) {
+                        sides.put(d, new Vec3(0, 0, 0));
+                    }
+                }
+            }
+
+            this.sides = sides;
+            return this;
+        }
+
+//        public Action setInvalidNeighbors(Direction... neighbors) {
+//            List<Direction> dirs = Arrays.asList(Direction.values());
+//            dirs.removeAll(Arrays.asList(neighbors));
+//            this.neighbors = dirs.toArray(Direction[]::new);
+//            return this;
+//        }
+
+        public Action setLookDirection(Direction lookDirection) {
+            this.lookDirection = lookDirection;
+            return this;
+        }
+
+        public Action setLookDirection2(Direction lookDirection2) {
+            this.lookDirection2 = lookDirection2;
+            return this;
+        }
+
+        public Action setSides(Map<Direction, Vec3> sides) {
+            this.sides = sides;
+            return this;
+        }
+
+        public Action setSides(Direction... directions) {
+            Map<Direction, Vec3> sides = new HashMap<>();
+
+            for (Direction d : directions) {
+                sides.put(d, new Vec3(0, 0, 0));
+            }
+
+            this.sides = sides;
+            return this;
+        }
+
+        public Action setItem(Item item) {
+            return this.setItems(item);
+        }
+
+        public Action setItems(Item ...items) {
+            this.clickItems = items;
+            return this;
+        }
+
+        public Action setRequiresSupport(boolean requiresSupport) {
+            this.requiresSupport = requiresSupport;
+            return this;
+        }
+
+        public Action setRequiresSupport() {
+            return this.setRequiresSupport(true);
+        }
+
+
+        public Direction getSide(){
+            if(side != null) return side;
+            Direction[] directions = new Direction[1];
+            getSides().keySet().stream().findFirst().ifPresent(direction -> directions[0] = direction);
+            return directions[0];
+        }
+
+        public void queueAction(BlockPos center) {
+//            System.out.println("Queued click?: " + center.relative(side).toString() + ", side: " + side.getOpposite());
+
+            if (LitematicaMixinMod.PRINT_IN_AIR.getBooleanValue() && !this.requiresSupport) {
+                target = center;
+            } else {
+                target = center.relative(side.getOpposite());
+            }
+
+        }
+        public void sendPlacementPreparation(LocalPlayer player){
+            switchToItems(player, clickItems);
+            Implementation.sendLookPacket(player, lookDirection, lookDirection2);
+        }
+
+        public void sendQueue(LocalPlayer player) {
+            if (target == null || hitModifier == null) return;
+
+            //#if MC > 260200
+            boolean wasSneaking = player.isSwinging();
+            //#else
+            //$$ boolean wasSneaking = player.swinging;
+            //#endif
+
+            Direction direction = side.getAxis() == Direction.Axis.Y ?
+                    ((lookDirection == null || !lookDirection.getAxis().isHorizontal())
+                            ? Direction.NORTH : lookDirection) : side;
+
+//            hitModifier = new Vec3(hitModifier.x, hitModifier.y, hitModifier.z);
+            Vec3 hitVec = hitModifier;
+            if(!usePrecisionPlacement){
+                hitModifier = hitModifier.yRot((direction.toYRot() + 90) % 360);
+                hitVec = Vec3.atCenterOf(target)
+                        .add(Vec3.atLowerCornerOf(side.getUnitVec3i()).scale(0.5))
+                        .add(hitModifier.scale(0.5));
+            }
+
+            if (shift && !wasSneaking)
+                setShift(player, true);
+            else if (!shift && wasSneaking)
+                setShift(player, false);
+
+            ItemStack mainHandStack1 = yxcfItem;
+
+            PlayerAction.interactBlock(InteractionHand.MAIN_HAND, hitVec, side, target, false, shift);
+
+            if (mainHandStack1 != null) {
+                if ( mainHandStack1.isEmpty()) {
+                    SwitchItem.removeItem(mainHandStack1);
+                } else SwitchItem.syncUseTime(mainHandStack1);
+            }
+//            System.out.println("Printed at " + (target.toString()) + ", " + side + ", modifier: " + hitVec);
+
+            if (shift && !wasSneaking)
+                setShift(player, false);
+            else if (!shift && wasSneaking)
+                setShift(player, true);
+
+            clearQueue();
+        }
+
+        public void clearQueue() {
+            this.target = null;
+            this.hitModifier = null;
+            this.lookDirection = null;
+            this.lookDirection2 = null;
+            this.shift = false;
+            currentAction = null;
+        }
+    }
+
+    public static class ClickAction extends Action {
+        @Override
+        public void queueAction(BlockPos center) {
+            super.queueAction(center);
+        }
+
+        @Override
+        public @Nullable Item[] getRequiredItems(Block backup) {
+            return this.clickItems;
+        }
+
+        @Override
+        public @Nullable Direction getValidSide(ClientLevel world, BlockPos pos) {
+            for (Direction side : getSides().keySet()) {
+                return side;
+            }
+
+            return null;
+        }
+    }
+
+    enum ClassHook {
+        // Placements
+        ROD(Implementation.NewBlocks.ROD.clazz),
+        WALLTORCH(WallTorchBlock.class, RedstoneWallTorchBlock.class),
+        TORCH(TorchBlock.class, RedstoneTorchBlock.class),
+        SLAB(SlabBlock.class),
+        STAIR(StairBlock.class),
+        TRAPDOOR(TrapDoorBlock.class),
+        PILLAR(RotatedPillarBlock.class),
+        ANVIL(AnvilBlock.class),
+        HOPPER(HopperBlock.class),
+        GRINDSTONE(GrindstoneBlock.class),
+        BUTTON(ButtonBlock.class),
+        CAMPFIRE(CampfireBlock.class),
+        SHULKER(ShulkerBoxBlock.class),
+        BED(BedBlock.class),
+        BELL(BellBlock.class),
+        AMETHYST(Implementation.NewBlocks.AMETHYST.clazz),
+        DOOR(DoorBlock.class),
+        COCOA(CocoaBlock.class),
+        OBSERVER(ObserverBlock.class),
+        WALLSKULL(WallSkullBlock.class),
+        NETHER_PORTAL_BLOCK(NetherPortalBlock.class),
+        //#if MC > 12002
+        CRAFTER(CrafterBlock.class),
+        //#endif
+
+        // Only clicks
+        FLOWER_POT(FlowerPotBlock.class),
+        BIG_DRIPLEAF_STEM(BigDripleafStemBlock.class),
+        SNOW(SnowLayerBlock.class),
+        CANDLES(Implementation.NewBlocks.CANDLES.clazz),
+        REPEATER(RepeaterBlock.class),
+        COMPARATOR(ComparatorBlock.class),
+        PICKLES(SeaPickleBlock.class),
+        NOTE_BLOCK(NoteBlock.class),
+        END_PORTAL_FRAME(EndPortalFrameBlock.class),
+
+        // Both
+        GATE(FenceGateBlock.class),
+        LEVER(LeverBlock.class),
+
+        // Other
+        FARMLAND(FarmlandBlock.class),
+        //#if MC > 260200
+        DIRT_PATH(PathBlock.class),
+        //#else
+        //$$ DIRT_PATH(DirtPathBlock.class),
+        //#endif
+        SKIP(SkullBlock.class, GrindstoneBlock.class, SignBlock.class, VineBlock.class,EndPortalBlock.class),
+        FLUID(LiquidBlock.class),
+        DEFAULT;
+
+        private final Class<?>[] classes;
+
+        ClassHook(Class<?> ...classes) {
+            this.classes = classes;
+        }
+    }
+}

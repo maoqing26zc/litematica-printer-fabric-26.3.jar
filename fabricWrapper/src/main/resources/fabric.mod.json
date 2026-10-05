@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}-all",
+  "version": "${mod_version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": [
+    {
+      "name": "aleksilassila",
+      "contact": {
+        "homepage": ""
+      }
+    },
+    {
+      "name": "zhaixianyu",
+      "contact": {
+        "homepage": "https://github.com/zhaixianyu"
+      }
+    }
+
+  ],
+  "contact": {
+    "homepage": "${mod_homepage}",
+    "issues": "${mod_sources}/issues",
+    "sources": "${mod_sources}"
+  },
+  "license": "${mod_license}",
+  "environment": "*",
+  "entrypoints": {
+
+  },
+  "depends": {
+    "malilib": "*"
+  },
+  "custom": {
+  }
+}

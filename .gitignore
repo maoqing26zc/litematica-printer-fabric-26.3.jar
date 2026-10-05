@@ -1,0 +1,21 @@
+.gradle
+.settings
+bin/
+build/
+eclipse/
+logs/
+.classpath
+.project
+build.number
+.idea/
+.DS_Store
+run/
+/run/
+/build/
+
+/publish/
+
+# 本地 maven 镜像里是第三方 mod 的 jar，不提交（获取方式见 local-maven/README.md）
+local-maven/**/*.jar
+# 构建时的临时/备份文件
+*.full

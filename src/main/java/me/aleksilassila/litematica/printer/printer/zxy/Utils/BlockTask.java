@@ -1,0 +1,264 @@
+package me.aleksilassila.litematica.printer.printer.zxy.Utils;
+
+import me.aleksilassila.litematica.printer.printer.Printer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
+
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.function.Predicate;
+
+import static me.aleksilassila.litematica.printer.interfaces.Implementation.sendLookPacket;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.BlockTask.BlockTaskManager.facingBlock;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.PlayerAction.excavateBlock;
+import static me.aleksilassila.litematica.printer.printer.zxy.Utils.ZxyUtils.*;
+
+public class BlockTask {
+    public BlockPos pos;
+    public Block block;
+    public BlockState state;
+    public ItemStack itemStack;
+    public Direction direction1;
+    public Direction direction2;
+    public Direction side;
+    public Map<String, Predicate<BlockTask>> predicateMap = new HashMap<>();
+    public String taskName;
+    public BlockTaskState taskState = BlockTaskState.INITIAL;
+    public boolean useShift = false;
+
+    public BlockTask(BlockPos pos, Block block) {
+        this.pos = pos;
+        this.block = block;
+    }
+
+    public BlockTask(BlockPos pos, BlockState state) {
+        this.pos = pos;
+        this.state = state;
+        this.block = state.getBlock();
+    }
+
+    public BlockTask(BlockPos pos) {
+        this.pos = pos;
+    }
+
+    public BlockTask(BlockPos pos, BlockState state, String taskName) {
+        this.pos = pos;
+        this.block = state.getBlock();
+        this.state = state;
+        this.taskName = taskName;
+    }
+
+    public BlockTask setBlock(Block block) {
+        this.block = block;
+        return this;
+    }
+
+    public BlockTask setState(BlockState state) {
+        this.state = state;
+        this.block = state.getBlock();
+        return this;
+    }
+
+    public BlockTask setItemStack(ItemStack itemStack) {
+        this.itemStack = itemStack;
+        return this;
+    }
+
+    public BlockTask setSide(Direction side) {
+        this.side = side;
+        return this;
+    }
+
+    public BlockTask setPos(BlockPos pos) {
+        this.pos = pos;
+        return this;
+    }
+
+    public BlockTask setDirection1(Direction direction1) {
+        this.direction1 = direction1;
+        return this;
+    }
+
+    public BlockTask setDirection2(Direction direction2) {
+        this.direction2 = direction2;
+        return this;
+    }
+
+    public BlockTask setPredicate(String predicateName, Predicate<BlockTask> predicate) {
+        this.predicateMap.put(predicateName, predicate);
+        return this;
+    }
+
+    public BlockTask setUseShift(boolean useShift) {
+        this.useShift = useShift;
+        return this;
+    }
+
+    public boolean done() {
+        return taskState.equals(BlockTaskState.DONE_TASK);
+    }
+
+    public boolean runPredicate(String predicateName) {
+        return predicateMap.get(predicateName).test(this);
+    }
+
+    public Map<String,Boolean> runAllPredicate() {
+        Map<String,Boolean> b = new HashMap<>();
+        predicateMap.forEach((k, v) -> b.put(k,v.test(this)));
+        return b;
+    }
+
+    public void runAutoPredicate(){
+        predicateMap.forEach((k, v) -> {
+            if (k.toLowerCase().contains("auto")) {
+                v.test(this);
+            }
+        } );
+    }
+
+    public boolean tick() {
+        runAutoPredicate();
+        if (runTask()) return true;
+        return done();
+    }
+
+    public boolean runTask() {
+        return done();
+    }
+
+    public boolean equalsBlockName(String blockName) {
+        return block != null && Filters.equalsBlockName(blockName, block);
+    }
+
+    public enum BlockTaskState {
+        INITIAL,
+        NEED_RUN_PREDICATE,
+        DONE_RUN_PREDICATE,
+        WAIT,
+        DONE_TASK
+    }
+
+    public static class BreakBlock extends BlockTask {
+        public boolean switchTool = true;
+        public BreakBlock(BlockPos pos, Block block) {
+            super(pos, block);
+        }
+
+        public BreakBlock(BlockPos pos, BlockState state) {
+            super(pos, state);
+        }
+
+        public BreakBlock(BlockPos pos) {
+            super(pos);
+        }
+
+        public BreakBlock(BlockPos pos, BlockState state, String taskName) {
+            super(pos, state, taskName);
+        }
+
+        @Override
+        public boolean runTask() {
+            if (excavateBlock(pos) == null) {
+                return false;
+            }
+            taskState = BlockTaskState.DONE_TASK;
+            return true;
+        }
+    }
+
+    public static class PlaceBlock extends BlockTask {
+        Vec3 vec3d = Vec3.ZERO;
+        public PlaceBlock(BlockPos pos, Block block) {
+            super(pos, block);
+        }
+
+        public PlaceBlock(BlockPos pos, BlockState state) {
+            super(pos, state);
+        }
+
+        public PlaceBlock(BlockPos pos) {
+            super(pos);
+        }
+
+        public PlaceBlock(BlockPos pos, BlockState state, String taskName) {
+            super(pos, state, taskName);
+        }
+
+        public PlaceBlock setVec3(Vec3 vec3d) {
+            this.vec3d = vec3d;
+            return this;
+        }
+
+        @Override
+        public boolean runTask() {
+            if (done()) return false;
+            Vec3 vec3d = Printer.getPrinter().usePrecisionPlacement(pos, state);
+            if (facingBlock != null && vec3d == null && direction1 != null && taskState == BlockTaskState.INITIAL) {
+                // TODO 应该有个静态变量记录direction1 和 direction2 改变朝向包时使其达到预想效果
+                sendLookPacket(ZxyUtils.client.player, direction1, direction2);
+                taskState = BlockTaskState.WAIT;
+                return false;
+            }
+            vec3d = vec3d != null ? vec3d : this.vec3d;
+            PlayerAction.interactBlock(InteractionHand.MAIN_HAND, vec3d, side, pos, false, useShift);
+            taskState = BlockTaskState.DONE_TASK;
+            return true;
+        }
+    }
+
+    public static class BlockTaskManager {
+        public static LinkedList<BlockTask> blockTaskList = new LinkedList<>();
+        public static FacingBlock facingBlock = null;
+        public static void tick() {
+            for (BlockTask blockTask : blockTaskList) {
+                if (blockTask.done()) continue;
+                blockTask.tick();
+            }
+            blockTaskList.removeIf(task -> task.done() || !task.pos.closerToCenterThan(ZxyUtils.client.player.getEyePosition(), getRage()));
+        }
+
+        public static boolean addTask(BlockTask task) {
+            if (blockTaskList.size() >= 256) return false;
+            return blockTaskList.add(task);
+        }
+
+        public static class FacingBlock{
+            public Direction direction1;
+            public Direction direction2;
+
+            public FacingBlock(Direction direction1) {
+                this.direction1 = direction1;
+            }
+
+            public FacingBlock(Direction direction1, Direction direction2) {
+                this.direction1 = direction1;
+                this.direction2 = direction2;
+            }
+
+            public Direction getDirection1() {
+                return direction1;
+            }
+
+            public FacingBlock setDirection1(Direction direction1) {
+                this.direction1 = direction1;
+                return this;
+            }
+
+            public Direction getDirection2() {
+                return direction2;
+            }
+
+            public FacingBlock setDirection2(Direction direction2) {
+                this.direction2 = direction2;
+                return this;
+            }
+        }
+
+    }
+}
